@@ -69,7 +69,7 @@ A batch is validated as a unit: partial acceptance would force producers to trac
 
 ### 3.3 Operational endpoints
 
-`/health/live` (process up, no dependency checks, so a database outage never restarts healthy containers), `/health/ready` (database reachable; the load balancer target) and `/metrics` (Prometheus format).
+`/health/live` (process up, no dependency checks, so a database outage never restarts healthy containers), `/health/ready` (database reachable; the load balancer target) `/metrics` (Prometheus format) and `/scalar` (API reference, enabled by configuration).
 
 ## 4. Data model
 

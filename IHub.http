@@ -1,0 +1,157 @@
+### IHub demo scenarios. Run with the VS Code REST Client extension, Visual Studio or JetBrains Rider.
+### Start the stack first: docker compose up --build
+
+@host = http://localhost:8080
+@broker = BRK-DEMO-001
+@from = 2026-10-01T00:00:00Z
+@to = 2026-11-01T00:00:00Z
+
+### 1. Submit two commissions for one broker -> both "Created"
+POST {{host}}/api/v1/activities
+Content-Type: application/json
+X-Correlation-ID: demo-step-1
+
+{
+  "activities": [
+    {
+      "sourceSystem": "life-admin",
+      "sourceActivityId": "POL-1001-COMM",
+      "version": 1,
+      "intermediaryId": "{{broker}}",
+      "activityType": "commission",
+      "status": "Active",
+      "amount": 1500.00,
+      "currency": "ZAR",
+      "occurredAt": "2026-10-05T09:15:00+02:00"
+    },
+    {
+      "sourceSystem": "investments",
+      "sourceActivityId": "INV-77-FEE",
+      "version": 1,
+      "intermediaryId": "{{broker}}",
+      "activityType": "advice-fee",
+      "status": "Active",
+      "amount": 820.50,
+      "currency": "ZAR",
+      "occurredAt": "2026-10-12T14:00:00Z"
+    }
+  ]
+}
+
+### 2. Statement -> ZAR gross 2320.50 from 2 activities
+GET {{host}}/api/v1/intermediaries/{{broker}}/statement?from={{from}}&to={{to}}
+
+### 3. Retry the exact same request (e.g. a network timeout) -> "Duplicate", total unchanged
+POST {{host}}/api/v1/activities
+Content-Type: application/json
+X-Correlation-ID: demo-step-3
+
+{
+  "activities": [
+    {
+      "sourceSystem": "life-admin",
+      "sourceActivityId": "POL-1001-COMM",
+      "version": 1,
+      "intermediaryId": "{{broker}}",
+      "activityType": "commission",
+      "status": "Active",
+      "amount": 1500.00,
+      "currency": "ZAR",
+      "occurredAt": "2026-10-05T09:15:00+02:00"
+    }
+  ]
+}
+
+### 4. Out of order: the cancellation (v3) arrives BEFORE the correction (v2) -> "Updated"
+POST {{host}}/api/v1/activities
+Content-Type: application/json
+X-Correlation-ID: demo-step-4
+
+{
+  "activities": [
+    {
+      "sourceSystem": "life-admin",
+      "sourceActivityId": "POL-1001-COMM",
+      "version": 3,
+      "intermediaryId": "{{broker}}",
+      "activityType": "commission",
+      "status": "Reversed",
+      "amount": 1500.00,
+      "currency": "ZAR",
+      "occurredAt": "2026-10-05T09:15:00+02:00"
+    }
+  ]
+}
+
+### 5. The late correction (v2) finally arrives -> "Stale", the reversal stands
+POST {{host}}/api/v1/activities
+Content-Type: application/json
+X-Correlation-ID: demo-step-5
+
+{
+  "activities": [
+    {
+      "sourceSystem": "life-admin",
+      "sourceActivityId": "POL-1001-COMM",
+      "version": 2,
+      "intermediaryId": "{{broker}}",
+      "activityType": "commission",
+      "status": "Active",
+      "amount": 1750.00,
+      "currency": "ZAR",
+      "occurredAt": "2026-10-05T09:15:00+02:00"
+    }
+  ]
+}
+
+### 6. Statement -> ZAR gross 820.50 (1 active, 1 reversed); lastUpdatedAt moved forward
+GET {{host}}/api/v1/intermediaries/{{broker}}/statement?from={{from}}&to={{to}}
+
+### 7. Same version, different content (a producer bug) -> "Conflict", not applied, warning logged
+POST {{host}}/api/v1/activities
+Content-Type: application/json
+
+{
+  "activities": [
+    {
+      "sourceSystem": "investments",
+      "sourceActivityId": "INV-77-FEE",
+      "version": 1,
+      "intermediaryId": "{{broker}}",
+      "activityType": "advice-fee",
+      "status": "Active",
+      "amount": 9999.99,
+      "currency": "ZAR",
+      "occurredAt": "2026-10-12T14:00:00Z"
+    }
+  ]
+}
+
+### 8. Validation: whole batch rejected with field-level errors (400 problem+json)
+POST {{host}}/api/v1/activities
+Content-Type: application/json
+
+{
+  "activities": [
+    {
+      "sourceSystem": "life-admin",
+      "sourceActivityId": "POL-2002-COMM",
+      "version": 0,
+      "intermediaryId": "{{broker}}",
+      "activityType": "commission",
+      "status": "Pending",
+      "amount": -5,
+      "currency": "XYZ",
+      "occurredAt": "2026-10-05T09:15:00"
+    }
+  ]
+}
+
+### 9. Operational signals
+GET {{host}}/health/ready
+
+###
+GET {{host}}/health/live
+
+###
+GET {{host}}/metrics

@@ -241,3 +241,11 @@ Acknowledged per second (database restarted at 15 s):
 ```
 
 At the brief's peak of thousands of activities per hour (1-3 per second), that is roughly a thousandfold headroom on a single instance.
+
+## 9. AWS run plan
+
+Design only. The full plan, covering upstream delivery, migrations, configuration and secrets, failure modes and capacity, is in **[docs/aws-run-plan.md](docs/aws-run-plan.md)**.
+
+- **Architecture.** Product systems publish to SNS; IHub consumes from its own SQS queue (with a DLQ) using an ECS Fargate worker that calls the same ingestion code as the HTTP endpoint. The statement API runs as a second Fargate service behind an ALB, with API Gateway or an identity provider in front for broker traffic. Data lives in RDS SQL Server Multi-AZ.
+- **Deployment.** ECS blue/green through CodeDeploy, with a 10% canary gated on readiness and the error-rate alarm, and automatic rollback. Chosen because rollback is a traffic switch to a version that is still running. Migrations run beforehand as a one-off task, using expand/contract changes.
+- **Capacity.** The brief's peak is about 1-3 activities per second; one instance measured about 2,000 per second (§7.4), so the database is the scaling limit. Start with 2 worker and 2 API tasks across AZs and `db.m6i.large`; scale the worker on queue backlog and the API on CPU.

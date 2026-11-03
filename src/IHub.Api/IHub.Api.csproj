@@ -15,4 +15,8 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="IHub.Api.Tests" />
+  </ItemGroup>
+
 </Project>

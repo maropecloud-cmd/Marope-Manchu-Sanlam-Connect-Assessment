@@ -20,5 +20,20 @@ services:
       retries: 30
       start_period: 20s
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__IHub: "Server=sqlserver,1433;Database=IHub;User Id=sa;Password=${MSSQL_SA_PASSWORD:-IHub_Local_Dev_2026!};Encrypt=True;TrustServerCertificate=True;Connect Timeout=5"
+      Database__ApplyMigrationsOnStartup: "true"
+      Api__EnableApiReference: "true"
+    ports:
+      - "${API_PORT:-8080}:8080"
+
 volumes:
   sqldata:

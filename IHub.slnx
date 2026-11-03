@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/IHub.Api/IHub.Api.csproj" />
+  </Folder>
+</Solution>

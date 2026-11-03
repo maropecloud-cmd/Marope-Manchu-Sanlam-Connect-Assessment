@@ -158,3 +158,19 @@ If reads become heavy (a portal polling every few seconds) or windows span years
 ### 7.1 Unit tests
 
 Unit tests cover validation rules, strict timestamp parsing, content hashing, and the SQL shape of the statement query: a single `SELECT`, aggregated in SQL and filtered on the index keys, so a refactor cannot quietly move the aggregation into memory.
+
+### 7.2 Integration tests
+
+Integration tests run the real API in-process against SQL Server in a container (Testcontainers), because unique-key and locking behaviour can only be tested on the real engine. Each test uses its own intermediary, so tests are independent while sharing one database.
+
+| Test | Scenario |
+| --- | --- |
+| `Resubmitting_the_same_revision_is_counted_once` | The same revision sent three times: `Created`, `Duplicate`, `Duplicate`; counted once |
+| `Duplicates_within_one_batch_are_counted_once` | The same revision twice in one batch |
+| `Reversal_that_arrives_before_the_original_is_not_undone_by_it` | v2 `Reversed` arrives before v1 `Active`; v1 is `Stale` and the total is 0 |
+| `Newer_version_replaces_the_stored_state` | v1 for 100, then v2 for 250; the total is 250 |
+| `Same_version_with_different_content_is_flagged_as_conflict_and_not_applied` | A producer bug is reported and the stored revision kept |
+| `Concurrent_submissions_for_one_intermediary_are_all_counted_exactly_once` | 40 activities, each sent twice, as 80 parallel requests; the sum is exact |
+| `Concurrent_versions_of_one_activity_converge_on_the_highest_version` | 25 versions, each sent twice in random parallel order; one `Created`, v25 stored |
+| `Activity_moved_to_another_intermediary_leaves_the_first_statement` | A newer version with a different broker moves the amount |
+| `StatementTests` | Half-open window boundaries, time zone offsets, per-currency totals, `lastUpdatedAt` on reversal, empty windows, invalid windows |

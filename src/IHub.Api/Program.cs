@@ -6,8 +6,7 @@ using IHub.Api.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddScoped<CorrelationContext>();
-builder.Services.AddSingleton<HubMetrics>();
+builder.AddObservability();
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddPersistence();
@@ -19,8 +18,11 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var app = builder.Build();
 
+app.UseObservability();
+
 app.MapActivityEndpoints();
 app.MapStatementEndpoints();
+app.MapOperationalEndpoints();
 
 await app.RunAsync();
 

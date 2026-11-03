@@ -67,6 +67,10 @@ A batch is validated as a unit: partial acceptance would force producers to trac
 
 `grossAmount` sums `Active` activities whose `occurredAt` is in `[from, to)`. `lastUpdatedAt` is when any activity in the window last changed, including reversals (`null` if none). `generatedAt` is the point in time the statement reflects. Both bounds are required (statement periods are a business definition), and a window may span at most 366 days. An intermediary with no activity gets an empty `200`: without an intermediary registry, unknown and inactive cannot be told apart.
 
+### 3.3 Operational endpoints
+
+`/health/live` (process up, no dependency checks, so a database outage never restarts healthy containers), `/health/ready` (database reachable; the load balancer target) and `/metrics` (Prometheus format).
+
 ## 4. Data model
 
 One current-state table, one row per activity.
@@ -174,3 +178,36 @@ Integration tests run the real API in-process against SQL Server in a container 
 | `Concurrent_versions_of_one_activity_converge_on_the_highest_version` | 25 versions, each sent twice in random parallel order; one `Created`, v25 stored |
 | `Activity_moved_to_another_intermediary_leaves_the_first_statement` | A newer version with a different broker moves the amount |
 | `StatementTests` | Half-open window boundaries, time zone offsets, per-currency totals, `lastUpdatedAt` on reversal, empty windows, invalid windows |
+
+## 8. Observability
+
+### 8.1 Signals
+
+| Signal | Answers |
+| --- | --- |
+| `/health/ready`, `/health/live` | Can this instance take traffic? Is the process alive? |
+| `http.server.request.duration` (route, status), built in | Throughput, latency percentiles, error rate per endpoint |
+| `ihub.activities.processed` (outcome, source) | Volume, and the mix of duplicates, stale and conflicts per producer |
+| `ihub.activity.ingest_lag` (source), histogram | **Processing delay**: from `occurredAt` to commit, which is when the activity appears in statements |
+| `ihub.ingest.batches.rejected` (reason) | Is a producer sending invalid data? |
+| `ihub.errors` (error type) | Which server-side failures, e.g. `database_unavailable` |
+| Runtime metrics | GC, thread pool, exceptions |
+| JSON logs with `CorrelationId` | What happened to this request? |
+
+Ingest lag is tagged by source, which separates "an upstream system is late" from "IHub is behind". The `source_system` tag is limited to a configured list (anything else is `other`), so a misbehaving producer cannot create unbounded metric series.
+
+### 8.2 Logs and end-to-end correlation
+
+A caller's `X-Correlation-ID` is adopted if log-safe, otherwise generated. It is echoed in the response, added to every log line's scope (with W3C trace and span IDs) and included in error bodies. Each activity row stores `LastCorrelationId`, so the trail also runs from data to logs: for a suspicious statement line, find the request that last changed it. Log events have stable IDs (4001 activity outcome, 4002 conflict, 3001 server error, and so on). Probe and scrape requests log at `Debug`. Integration tests cover the health probes, the metrics output and correlation ID propagation.
+
+```json
+{"Timestamp":"2026-11-02T13:20:01.512Z","EventId":4001,"LogLevel":"Information","Message":"Activity Updated: life-admin/POL-1001-COMM v3 for intermediary BRK-DEMO-001","State":{"Outcome":"Updated","SourceSystem":"life-admin","Version":3},"Scopes":[{"TraceId":"4bf92f35..."},{"CorrelationId":"demo-step-4"}]}
+```
+
+### 8.3 Alerts (CloudWatch, from scraped metrics plus ALB and SQS metrics)
+
+| Alert | Condition | Operator action |
+| --- | --- | --- |
+| **Rising error rate** (page) | 5xx above 2% of requests for 5 min, or `ihub.errors{error_type="database_unavailable"}` above 0 for 3 min, or fewer than 2 healthy targets | Check `/health/ready` and RDS events (failover, CPU, storage). If it started with a deployment, roll back. Use a failing response's `correlationId` to find the exception |
+| **Growing processing delay** (page) | p95 `ihub.activity.ingest_lag` above 15 min for 15 min, or SQS oldest message older than 10 min | One `source_system` late: upstream issue, contact its owners. All late with a growing queue: IHub is behind, so check scaling and RDS load. Check the DLQ for poison messages |
+| Producer conflicts (ticket) | Any `outcome="conflict"` within an hour | A source reused a version with different content; raise it with the owning team |

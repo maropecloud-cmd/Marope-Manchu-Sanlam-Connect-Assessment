@@ -22,4 +22,9 @@
     <ProjectReference Include="..\..\src\IHub.Api\IHub.Api.csproj" />
   </ItemGroup>
 
+  <!-- Shared with the simulator. -->
+  <ItemGroup>
+    <Compile Include="..\..\tools\IHub.Simulator\Workload\*.cs" Link="Workload\%(Filename)%(Extension)" />
+  </ItemGroup>
+
 </Project>

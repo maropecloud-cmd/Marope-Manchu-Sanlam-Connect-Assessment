@@ -211,3 +211,15 @@ A caller's `X-Correlation-ID` is adopted if log-safe, otherwise generated. It is
 | **Rising error rate** (page) | 5xx above 2% of requests for 5 min, or `ihub.errors{error_type="database_unavailable"}` above 0 for 3 min, or fewer than 2 healthy targets | Check `/health/ready` and RDS events (failover, CPU, storage). If it started with a deployment, roll back. Use a failing response's `correlationId` to find the exception |
 | **Growing processing delay** (page) | p95 `ihub.activity.ingest_lag` above 15 min for 15 min, or SQS oldest message older than 10 min | One `source_system` late: upstream issue, contact its owners. All late with a growing queue: IHub is behind, so check scaling and RDS load. Check the DLQ for poison messages |
 | Producer conflicts (ticket) | Any `outcome="conflict"` within an hour | A source reused a version with different content; raise it with the owning team |
+
+### 7.3 Property test: convergence against a reference model
+
+Example tests check the interleavings someone thought of. [ConvergencePropertyTests](tests/IHub.Api.Tests/Integration/ConvergencePropertyTests.cs) checks the rule itself:
+
+- A seeded [generator](tools/IHub.Simulator/Workload/WorkloadGenerator.cs) creates activity histories with corrections, reversals, moves between brokers, version gaps (1, 2, 4), time corrections across window boundaries, and the same instant written in UTC or SAST.
+- Each revision is redelivered with 40% probability, everything is shuffled, cut into random batches and sent with 12 concurrent producers.
+- The result is compared with a [reference model](tools/IHub.Simulator/Workload/ReferenceModel.cs) about ten lines long ("keep the highest version, sum the active ones in the window"). Every stored row and every statement must match it, with exactly one `Created` per activity and no `Conflict`.
+
+Five fixed seeds run on every build. `IHUB_PROPERTY_SEEDS=random:50 dotnet test` explores new ones; 50 random seeds passed. A failure prints the seed and the exact diverging rows, and `IHUB_PROPERTY_SEEDS=<seed>` replays it.
+
+**Does the test catch real bugs?** I changed the version guard from `Version < @v` to `Version != @v`, a plausible slip that lets older versions overwrite newer ones. The test failed, listing activities such as `stored v1, expected v4`.

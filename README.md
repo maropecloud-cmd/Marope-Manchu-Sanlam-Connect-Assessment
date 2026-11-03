@@ -79,8 +79,16 @@ dotnet test
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
 | Unit        | Validation rules, strict timestamp parsing, content hashing, SQL shape of the statement query                                                      | Nothing                 |
 | Integration | Duplicates, out-of-order versions, concurrent submissions, producer conflicts, window boundaries, multi-currency, health, metrics, correlation IDs | Docker (Testcontainers) |
+| Property    | Random activity histories, duplicated, shuffled and sent concurrently, must match an independent reference model exactly                          | Docker (Testcontainers) |
 
 Integration tests start a throwaway SQL Server container and run the real API in-process. Correctness under concurrency depends on database behaviour, so it is tested against the real engine, not a fake. To run only the unit tests: `dotnet test --filter "FullyQualifiedName~Unit"`.
+
+The property test runs five fixed seeds. To explore more, or replay a failure it reports:
+
+```bash
+IHUB_PROPERTY_SEEDS=random:50 dotnet test --filter "FullyQualifiedName~ConvergencePropertyTests"
+IHUB_PROPERTY_SEEDS=303       dotnet test --filter "FullyQualifiedName~ConvergencePropertyTests"
+```
 
 ## Configuration
 
@@ -111,7 +119,9 @@ src/IHub.Api/
   Common/              Strict timestamp parsing, identifier rules
 tests/IHub.Api.Tests/
   Unit/                No external dependencies
-  Integration/         Real API + real SQL Server (Testcontainers)
+  Integration/         Real API + real SQL Server (Testcontainers), including the property test
+tools/IHub.Simulator/
+  Workload/            Seeded workload generator and reference model, shared with the property test
 IHub.http              Demo scenarios
 docker-compose.yml     SQL Server + API
 ```

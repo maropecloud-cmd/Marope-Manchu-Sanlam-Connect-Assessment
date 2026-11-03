@@ -4,6 +4,7 @@ A small .NET 10 service that ingests activity from upstream product systems and 
 
 - Design, decisions and trade-offs: **[SOLUTION.md](SOLUTION.md)**
 - Stack: C# / .NET 10 (ASP.NET Core Minimal APIs), EF Core 10, SQL Server 2022, OpenTelemetry, xUnit + Testcontainers
+- Evidence: a property test against a reference model, plus a load and failure simulator that restarts the database mid-load and reconciles every statement ([results](SOLUTION.md#7-evidence-correctness-under-load-and-failure))
 
 ---
 
@@ -102,7 +103,7 @@ dotnet run --project tools/IHub.Simulator -c Release -- --seed 42
 dotnet run --project tools/IHub.Simulator -c Release -- --seed 7 --activities 6000 --rate 400 --restart-db-after 15
 ```
 
-`--help` lists every option (`--url` if the API is not on port 8080, `--report <file>` to save the Markdown report). CI runs the failure scenario on every push.
+`--help` lists every option (`--url` if the API is not on port 8080, `--report <file>` to save the Markdown report). Reports from my runs are in [docs/simulation](docs/simulation). CI runs the failure scenario on every push.
 
 ## Configuration
 
@@ -137,6 +138,7 @@ tests/IHub.Api.Tests/
 tools/IHub.Simulator/
   Workload/            Seeded workload generator and reference model, shared with the property test
                        Load and failure simulator with statement reconciliation
+docs/simulation/       Reports from simulator runs
 IHub.http              Demo scenarios
 docker-compose.yml     SQL Server + API
 ```

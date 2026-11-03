@@ -223,3 +223,21 @@ Example tests check the interleavings someone thought of. [ConvergencePropertyTe
 Five fixed seeds run on every build. `IHUB_PROPERTY_SEEDS=random:50 dotnet test` explores new ones; 50 random seeds passed. A failure prints the seed and the exact diverging rows, and `IHUB_PROPERTY_SEEDS=<seed>` replays it.
 
 **Does the test catch real bugs?** I changed the version guard from `Version < @v` to `Version != @v`, a plausible slip that lets older versions overwrite newer ones. The test failed, listing activities such as `stored v1, expected v4`.
+
+### 7.4 Load and failure simulation
+
+[IHub.Simulator](tools/IHub.Simulator) drives the running Docker stack with the same generator, behaves like at-least-once producers (exponential backoff with jitter, honouring `Retry-After`), can restart the database container mid-run, and finally reconciles every broker's statement against the reference model. Measured on a laptop (Core i9-11950H; API and SQL Server sharing one Docker VM):
+
+| Scenario | Workload | Result |
+| --- | --- | --- |
+| [Baseline](docs/simulation/baseline.md) | 5,000 activities, 12,521 revisions, 17,756 deliveries, 200 brokers, 16 producers, unthrottled | **2,583 activities/s** (about 2,000-2,800 across runs); p95 request (25 per batch) 223 ms; all 200 statements exact |
+| [Database restart](docs/simulation/database-restart.md) | 6,000 activities, 21,283 deliveries at 400/s; SQL Server restarted at 15 s | Ingestion paused about 3 s (3-14 s across runs), then the backlog cleared. Only **3 of 855 requests returned 503**: EF Core's retries absorbed the rest, at the cost of a p99 of 4.4 s. Readiness went unready, then ready, as a load balancer would see. All 200 statements exact |
+
+The restart run shows the lost-acknowledgement case. Of 6,000 activities, 5,991 were `Created`; the other 9 were reported `Duplicate`. Their inserts committed just as the database stopped, the acknowledgement was lost, and the retries were correctly recognised as repeats. Nothing was double counted.
+
+```
+Acknowledged per second (database restarted at 15 s):
+▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁···▂█▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁
+```
+
+At the brief's peak of thousands of activities per hour (1-3 per second), that is roughly a thousandfold headroom on a single instance.

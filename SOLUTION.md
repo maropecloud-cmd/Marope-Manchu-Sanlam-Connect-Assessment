@@ -66,3 +66,35 @@ A batch is validated as a unit: partial acceptance would force producers to trac
 ```
 
 `grossAmount` sums `Active` activities whose `occurredAt` is in `[from, to)`. `lastUpdatedAt` is when any activity in the window last changed, including reversals (`null` if none). `generatedAt` is the point in time the statement reflects. Both bounds are required (statement periods are a business definition), and a window may span at most 366 days. An intermediary with no activity gets an empty `200`: without an intermediary registry, unknown and inactive cannot be told apart.
+
+## 4. Data model
+
+One current-state table, one row per activity.
+
+| Column | Type | Purpose |
+| --- | --- | --- |
+| `Id` | `bigint identity`, clustered PK | Burst inserts append instead of splitting pages |
+| `SourceSystem`, `SourceActivityId` | `varchar(50)`, `varchar(100)`, BIN2 | Identity |
+| `Version` | `bigint`, check `>= 1` | Orders revisions |
+| `IntermediaryId` | `varchar(50)` BIN2 | Statement owner |
+| `ActivityType` | `varchar(50)` | Free-form business type |
+| `Status` | `varchar(16)`, check | `Active` or `Reversed` |
+| `Amount`, `Currency` | `decimal(19,4)` check `>= 0`, `char(3)` | Exact money |
+| `OccurredAt` | `datetimeoffset` (UTC) | Statement windowing |
+| `ContentHash` | `binary(32)` | SHA-256 of business fields; tells `Duplicate` from `Conflict` |
+| `FirstReceivedAt`, `UpdatedAt` | `datetimeoffset` | Receipt time; drives `lastUpdatedAt` |
+| `LastCorrelationId` | `varchar(64)` | Links a row to the request (and logs) that last changed it |
+
+| Index | Definition | Used for |
+| --- | --- | --- |
+| `UX_Activities_SourceKey` | Unique `(SourceSystem, SourceActivityId)` | The idempotency guarantee |
+| `IX_Activities_Intermediary_OccurredAt` | `(IntermediaryId, OccurredAt)` INCLUDE `(Status, Currency, Amount, UpdatedAt)` | The statement query, answered from the index alone |
+
+Choices made for real-world data:
+
+- **Binary collation on identifiers.** SQL Server's default is case-insensitive and would silently merge `pol-1` and `POL-1`.
+- **ASCII-only identifiers in `varchar`.** SQL Server replaces non-ASCII characters in `varchar`, which could make two IDs equal.
+- **Check constraints** (`Version >= 1`, `Amount >= 0`, valid `Status`). They duplicate API validation on purpose, to protect against backfills and scripts.
+- **Read Committed Snapshot Isolation**, enabled in the initial migration. Statement reads see a consistent snapshot and never block, or are blocked by, ingestion.
+
+Schema changes are EF Core migrations. Locally they are applied at startup before Kestrel listens, so readiness cannot pass against an old schema. In production they run as a separate deployment step.

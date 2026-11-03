@@ -98,3 +98,38 @@ Choices made for real-world data:
 - **Read Committed Snapshot Isolation**, enabled in the initial migration. Statement reads see a consistent snapshot and never block, or are blocked by, ingestion.
 
 Schema changes are EF Core migrations. Locally they are applied at startup before Kestrel listens, so readiness cannot pass against an old schema. In production they run as a separate deployment step.
+
+## 5. Correctness: duplicates, out-of-order arrival, concurrency
+
+### 5.1 Write algorithm ([ActivityIngestor.cs](src/IHub.Api/Features/Activities/ActivityIngestor.cs))
+
+```
+1. INSERT the revision                                   -> Created
+     unique-key violation: the activity exists, go to 2
+2. UPDATE ... SET <fields>, Version = @v
+   WHERE SourceSystem = @s AND SourceActivityId = @id AND Version < @v
+     1 row                                               -> Updated
+     0 rows: stored version is the same or newer, go to 3
+3. SELECT Version, ContentHash (reporting only)
+     stored version > @v                                 -> Stale
+     same version, same hash                             -> Duplicate
+     same version, different hash                        -> Conflict
+```
+
+Steps 1 and 2 decide what is stored; step 3 only explains the outcome to the producer.
+
+### 5.2 Why it holds under concurrency
+
+| Race | What SQL Server does | Result |
+| --- | --- | --- |
+| Two inserts of a new activity | The unique index admits one; the other gets error 2627/2601 and goes to step 2 | One row |
+| Two updates (v2, v3) | The row's update lock serialises them; the second re-evaluates `Version < @v` against the committed row | v3 is stored, whichever arrives first |
+| An older or repeated version racing a newer one | Its predicate is false against the newer row | `Stale` or `Duplicate` |
+| A statement read during ingestion | RCSI serves a consistent committed snapshot without blocking | Totals as of one point in time |
+| Several service instances | No in-memory locks or caches; all coordination is in the database | Scale out without changes |
+
+Concurrent submissions for the **same intermediary** need nothing extra: different activities are different rows, and there is no per-intermediary total to contend on.
+
+### 5.3 Retries and partial failure
+
+Revisions in a batch commit one by one. If a batch fails midway, the producer resends all of it; revisions that already committed come back as `Duplicate`. EF Core's `EnableRetryOnFailure` retries transient database errors, which is safe for the same reason: a retried insert that had in fact committed hits the unique key. The unique-key violations behind normal duplicate handling are logged at `Debug`, so they never page anyone.

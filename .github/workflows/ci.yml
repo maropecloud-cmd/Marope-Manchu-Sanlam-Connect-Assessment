@@ -30,14 +30,38 @@ jobs:
           dotnet tool install --global dotnet-ef
           dotnet ef migrations has-pending-model-changes --project src/IHub.Api --no-build --configuration Release
 
-  container:
+  simulation:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
 
       - name: Validate compose file
         run: docker compose config --quiet
 
-      - name: Build image
-        run: docker build -t ihub-api:ci .
+      - name: Start the stack (docker compose up --build)
+        run: |
+          docker compose up --build -d
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/health/ready && exit 0
+            sleep 5
+          done
+          docker compose logs api
+          exit 1
+
+      - name: Load and failure simulation (database restarted mid-load)
+        run: >
+          dotnet run --project tools/IHub.Simulator -c Release --
+          --activities 3000 --rate 300 --restart-db-after 10 --report simulation.md
+
+      - name: Publish report
+        if: always()
+        run: test -f simulation.md && cat simulation.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: API logs on failure
+        if: failure()
+        run: docker compose logs api --tail 200

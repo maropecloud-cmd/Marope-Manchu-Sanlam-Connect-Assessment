@@ -90,6 +90,20 @@ IHUB_PROPERTY_SEEDS=random:50 dotnet test --filter "FullyQualifiedName~Convergen
 IHUB_PROPERTY_SEEDS=303       dotnet test --filter "FullyQualifiedName~ConvergencePropertyTests"
 ```
 
+## Load and failure simulation
+
+With the stack running (`docker compose up --build`), the simulator plays many at-least-once producers against it. It sends duplicated, out-of-order revisions concurrently, can restart the database container mid-run, and then checks every broker's statement against the reference model. It exits non-zero on any mismatch.
+
+```bash
+# Throughput: as fast as the service accepts
+dotnet run --project tools/IHub.Simulator -c Release -- --seed 42
+
+# Failure: steady 400/s, SQL Server container restarted after 15 s
+dotnet run --project tools/IHub.Simulator -c Release -- --seed 7 --activities 6000 --rate 400 --restart-db-after 15
+```
+
+`--help` lists every option (`--url` if the API is not on port 8080, `--report <file>` to save the Markdown report). CI runs the failure scenario on every push.
+
 ## Configuration
 
 All settings live in [appsettings.json](src/IHub.Api/appsettings.json) and can be overridden with environment variables (`Section__Key`).
@@ -122,6 +136,7 @@ tests/IHub.Api.Tests/
   Integration/         Real API + real SQL Server (Testcontainers), including the property test
 tools/IHub.Simulator/
   Workload/            Seeded workload generator and reference model, shared with the property test
+                       Load and failure simulator with statement reconciliation
 IHub.http              Demo scenarios
 docker-compose.yml     SQL Server + API
 ```

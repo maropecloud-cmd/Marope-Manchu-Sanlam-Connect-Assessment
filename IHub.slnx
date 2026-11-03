@@ -2,6 +2,9 @@
   <Folder Name="/src/">
     <Project Path="src/IHub.Api/IHub.Api.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/IHub.Simulator/IHub.Simulator.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/IHub.Api.Tests/IHub.Api.Tests.csproj" />
   </Folder>

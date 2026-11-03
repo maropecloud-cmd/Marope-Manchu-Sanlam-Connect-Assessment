@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using IHub.Api.Features.Activities;
+using IHub.Api.Features.Statements;
 using IHub.Api.Observability;
 using IHub.Api.Persistence;
 
@@ -11,6 +12,7 @@ builder.Services.AddSingleton<HubMetrics>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddPersistence();
 builder.Services.AddActivityIngestion();
+builder.Services.AddStatements();
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -18,6 +20,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 var app = builder.Build();
 
 app.MapActivityEndpoints();
+app.MapStatementEndpoints();
 
 await app.RunAsync();
 

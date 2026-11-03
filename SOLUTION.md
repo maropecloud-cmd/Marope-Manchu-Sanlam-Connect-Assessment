@@ -133,3 +133,28 @@ Concurrent submissions for the **same intermediary** need nothing extra: differe
 ### 5.3 Retries and partial failure
 
 Revisions in a batch commit one by one. If a batch fails midway, the producer resends all of it; revisions that already committed come back as `Duplicate`. EF Core's `EnableRetryOnFailure` retries transient database errors, which is safe for the same reason: a retried insert that had in fact committed hits the unique key. The unique-key violations behind normal duplicate handling are logged at `Debug`, so they never page anyone.
+
+## 6. How the statement is derived
+
+[StatementQuery.cs](src/IHub.Api/Features/Statements/StatementQuery.cs):
+
+```sql
+SELECT Currency,
+       SUM(CASE WHEN Status = 'Active' THEN Amount ELSE 0 END),
+       COUNT(CASE WHEN Status = 'Active' THEN 1 END),
+       COUNT(CASE WHEN Status = 'Reversed' THEN 1 END),
+       MAX(UpdatedAt)
+FROM   Activities
+WHERE  IntermediaryId = @id AND OccurredAt >= @from AND OccurredAt < @to
+GROUP  BY Currency;
+```
+
+It is a seek on the covering index. Computing on read means there is no second copy of the data to keep atomic, compensate when a version changes the amount or broker, or rebuild after drift. Activities are visible as soon as they commit.
+
+If reads become heavy (a portal polling every few seconds) or windows span years of busy data, the next step is a daily summary table `(IntermediaryId, Currency, Day)` updated in the same transaction as the activity write. The write path already has the old and new state of each activity, so the API would not change.
+
+## 7. Evidence: correctness under load and failure
+
+### 7.1 Unit tests
+
+Unit tests cover validation rules, strict timestamp parsing, content hashing, and the SQL shape of the statement query: a single `SELECT`, aggregated in SQL and filtered on the index keys, so a refactor cannot quietly move the aggregation into memory.

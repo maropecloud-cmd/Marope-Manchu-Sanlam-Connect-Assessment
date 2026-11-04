@@ -1,5 +1,7 @@
 # IHub Intermediary Activity Statement
 
+[![ci](https://github.com/maropecloud-cmd/Marope-Manchu-Sanlam-Connect-Assessment/actions/workflows/ci.yml/badge.svg)](https://github.com/maropecloud-cmd/Marope-Manchu-Sanlam-Connect-Assessment/actions/workflows/ci.yml)
+
 A small .NET 10 service that ingests activity from upstream product systems and returns an intermediary's activity statement (gross totals over a time window). It is built to stay correct when activities arrive **more than once**, **out of order** and **concurrently**.
 
 - Design, decisions and trade-offs: **[SOLUTION.md](SOLUTION.md)**

@@ -43,4 +43,20 @@ public sealed class OperationalEndpointsTests(IHubApiFactory factory)
         Assert.Contains("ihub_activities_processed", metrics, StringComparison.Ordinal);
         Assert.Contains("ihub_activity_ingest_lag_seconds", metrics, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task Malformed_batch_is_rejected_with_problem_details_and_counted()
+    {
+        using var body = new StringContent("{ \"activities\": [", System.Text.Encoding.UTF8, "application/json");
+        using var response = await _api.Http.PostAsync("/api/v1/activities", body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("The request could not be read.", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        var metrics = await _api.Http.GetStringAsync("/metrics");
+        Assert.Contains(metrics.Split('\n'), line =>
+            line.StartsWith("ihub_ingest_batches_rejected_total{", StringComparison.Ordinal)
+            && line.Contains("reason=\"malformed\"", StringComparison.Ordinal));
+    }
 }

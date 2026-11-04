@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.DependencyInjection;
+using OpenTelemetry.Exporter;
 using Testcontainers.MsSql;
 
 namespace IHub.Api.Tests.Integration;
@@ -30,6 +32,10 @@ public sealed class IHubApiFactory : WebApplicationFactory<Program>, IAsyncLifet
         builder.UseSetting("ConnectionStrings:IHub", connectionString);
         builder.UseSetting("Database:ApplyMigrationsOnStartup", "true");
         builder.UseSetting("Api:EnableApiReference", "false");
+
+        // Each scrape must reflect the requests made just before it.
+        builder.ConfigureServices(services => services.Configure<PrometheusAspNetCoreOptions>(
+            options => options.ScrapeResponseCacheDurationMilliseconds = 0));
     }
 }
 

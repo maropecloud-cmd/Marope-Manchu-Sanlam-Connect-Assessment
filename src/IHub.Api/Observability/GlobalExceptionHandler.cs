@@ -1,3 +1,4 @@
+using IHub.Api.Features.Activities;
 using IHub.Api.Persistence;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
@@ -20,6 +21,11 @@ internal sealed partial class GlobalExceptionHandler(
         }
 
         var (statusCode, title, errorType) = Classify(exception);
+
+        if (exception is BadHttpRequestException && IsActivitySubmission(context))
+        {
+            metrics.BatchRejected("malformed");
+        }
 
         if (statusCode >= StatusCodes.Status500InternalServerError)
         {
@@ -52,6 +58,10 @@ internal sealed partial class GlobalExceptionHandler(
             (StatusCodes.Status503ServiceUnavailable, "The service cannot reach its database. Retry shortly.", "database_unavailable"),
         _ => (StatusCodes.Status500InternalServerError, "An unexpected error occurred.", "unhandled"),
     };
+
+    private static bool IsActivitySubmission(HttpContext context) =>
+        context.Features.Get<IExceptionHandlerFeature>()?.Endpoint?.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName
+            == ActivityEndpoints.SubmitEndpointName;
 
     [LoggerMessage(EventId = 3001, Level = LogLevel.Error,
         Message = "Request failed with {ErrorType}; responding {StatusCode}")]

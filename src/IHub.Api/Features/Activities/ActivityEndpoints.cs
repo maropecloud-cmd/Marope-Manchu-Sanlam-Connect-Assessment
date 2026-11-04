@@ -5,6 +5,8 @@ namespace IHub.Api.Features.Activities;
 
 internal static class ActivityEndpoints
 {
+    public const string SubmitEndpointName = "SubmitActivities";
+
     public static IServiceCollection AddActivityIngestion(this IServiceCollection services)
     {
         services.AddOptions<IngestionOptions>()
@@ -20,7 +22,7 @@ internal static class ActivityEndpoints
     public static IEndpointRouteBuilder MapActivityEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/api/v1/activities", SubmitAsync)
-            .WithName("SubmitActivities")
+            .WithName(SubmitEndpointName)
             .WithTags("Activities")
             .WithSummary("Submit a batch of activity revisions")
             .WithDescription(

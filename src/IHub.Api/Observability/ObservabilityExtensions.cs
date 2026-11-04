@@ -21,6 +21,9 @@ internal static class ObservabilityExtensions
             context.ProblemDetails.Extensions["correlationId"] = context.HttpContext.TraceIdentifier);
         builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 
+        // Unreadable request bodies reach GlobalExceptionHandler in every environment, not only Development.
+        builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
+
         builder.Services.AddHealthChecks()
             .AddDbContextCheck<HubDbContext>("database", tags: [ReadinessTag]);
 

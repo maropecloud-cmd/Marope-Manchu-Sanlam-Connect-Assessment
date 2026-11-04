@@ -82,7 +82,7 @@ The response gives each item's outcome in request order, so producers can reconc
 | `Stale` | Lower version than stored (arrived out of order) | No |
 | `Conflict` | Same version, different content: a producer bug. Not applied; logged and counted | No |
 
-`200` means the batch was processed. `400` means validation failed and nothing was applied; errors name the field, e.g. `activities[3].amount`. `503` (with `Retry-After`) means the database is unavailable and the whole batch can be resent. `500` includes the `correlationId`.
+`200` means the batch was processed. `400` means the body could not be read or validation failed, and nothing was applied; validation errors name the field, e.g. `activities[3].amount`. `503` (with `Retry-After`) means the database is unavailable and the whole batch can be resent. `500` includes the `correlationId`.
 
 A batch is validated as a unit: partial acceptance would force producers to track which items went through. Because processing is idempotent, the producer rule is simply "fix and resend the whole batch".
 
@@ -254,7 +254,7 @@ At the brief's peak of thousands of activities per hour (1-3 per second), that i
 | `http.server.request.duration` (route, status), built in | Throughput, latency percentiles, error rate per endpoint |
 | `ihub.activities.processed` (outcome, source) | Volume, and the mix of duplicates, stale and conflicts per producer |
 | `ihub.activity.ingest_lag` (source), histogram | **Processing delay**: from `occurredAt` to commit, which is when the activity appears in statements |
-| `ihub.ingest.batches.rejected` (reason) | Is a producer sending invalid data? |
+| `ihub.ingest.batches.rejected` (reason: `validation`, `malformed`) | Is a producer sending invalid data? |
 | `ihub.errors` (error type) | Which server-side failures, e.g. `database_unavailable` |
 | Runtime metrics | GC, thread pool, exceptions |
 | JSON logs with `CorrelationId` | What happened to this request? |

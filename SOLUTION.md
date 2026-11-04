@@ -1,5 +1,36 @@
 # IHub Intermediary Activity Statement: Solution Design
 
+## Summary for reviewers
+
+**What it is.** A .NET 10 service with SQL Server. Producers `POST` batches of activity revisions; brokers `GET` a statement of gross totals per currency for a time window. It runs locally with `docker compose up --build`.
+
+**How totals stay correct.** The database enforces three rules, so no in-process locks or coordination are needed and the rules hold however many instances run:
+
+1. **One row per activity.** A unique index on `(sourceSystem, sourceActivityId)` makes a duplicate impossible to store.
+2. **Highest version wins.** A single `UPDATE ... WHERE Version < @new` applies a revision only if it is newer, so arrival order does not matter.
+3. **Nothing is pre-aggregated.** A statement is one indexed `SUM` over the current rows, so there is no running total for concurrent writers to corrupt.
+
+**How I know it works.** The guarantees are measured, not just described ([section 7](#7-evidence-correctness-under-load-and-failure)):
+
+| Evidence | Result |
+| --- | --- |
+| Property test: random activity histories (corrections, reversals, moves between brokers, version gaps, mixed offsets), duplicated, shuffled and sent concurrently, then compared with an independent reference model | 55 seeds, 0 divergences. A deliberately broken version guard fails the test |
+| Load simulation: 17,756 deliveries (with duplicates, out of order) for 200 brokers against the Docker stack | 2,583 activities/s on a laptop (about 2,000-2,800 across runs); all 200 statements exact |
+| Failure simulation: SQL Server container restarted mid-load at 400 activities/s | 3 of 855 requests returned 503 and were retried by producers; activities whose acknowledgement was lost resolved as `Duplicate`; all 200 statements exact |
+
+**Brief requirement → where it is answered**
+
+| Requirement | Section |
+| --- | --- |
+| API, data model, assumptions | [2](#2-assumptions), [3](#3-api), [4](#4-data-model) |
+| No double counting, out-of-order arrival, concurrency | [5](#5-correctness-duplicates-out-of-order-arrival-concurrency), proven in [7](#7-evidence-correctness-under-load-and-failure) |
+| Growth to more activity types and sources | [10](#10-growth-more-activity-types-and-sources) |
+| Signals exposed and why; two alerts with thresholds and actions | [8](#8-observability) |
+| AWS architecture, delivery, rollout, migrations, configuration, failures, capacity | [9](#9-aws-run-plan) and [docs/aws-run-plan.md](docs/aws-run-plan.md) |
+| Trade-offs, assumptions, AI use | [11](#11-trade-offs), [2](#2-assumptions), [13](#13-use-of-ai-tools) |
+
+---
+
 ## 1. Decisions at a glance
 
 | Area | Decision | Reason |
@@ -183,6 +214,36 @@ Integration tests run the real API in-process against SQL Server in a container 
 | `Activity_moved_to_another_intermediary_leaves_the_first_statement` | A newer version with a different broker moves the amount |
 | `StatementTests` | Half-open window boundaries, time zone offsets, per-currency totals, `lastUpdatedAt` on reversal, empty windows, invalid windows |
 
+### 7.3 Property test: convergence against a reference model
+
+Example tests check the interleavings someone thought of. [ConvergencePropertyTests](tests/IHub.Api.Tests/Integration/ConvergencePropertyTests.cs) checks the rule itself:
+
+- A seeded [generator](tools/IHub.Simulator/Workload/WorkloadGenerator.cs) creates activity histories with corrections, reversals, moves between brokers, version gaps (1, 2, 4), time corrections across window boundaries, and the same instant written in UTC or SAST.
+- Each revision is redelivered with 40% probability, everything is shuffled, cut into random batches and sent with 12 concurrent producers.
+- The result is compared with a [reference model](tools/IHub.Simulator/Workload/ReferenceModel.cs) about ten lines long ("keep the highest version, sum the active ones in the window"). Every stored row and every statement must match it, with exactly one `Created` per activity and no `Conflict`.
+
+Five fixed seeds run on every build. `IHUB_PROPERTY_SEEDS=random:50 dotnet test` explores new ones; 50 random seeds passed. A failure prints the seed and the exact diverging rows, and `IHUB_PROPERTY_SEEDS=<seed>` replays it.
+
+**Does the test catch real bugs?** I changed the version guard from `Version < @v` to `Version != @v`, a plausible slip that lets older versions overwrite newer ones. The test failed, listing activities such as `stored v1, expected v4`.
+
+### 7.4 Load and failure simulation
+
+[IHub.Simulator](tools/IHub.Simulator) drives the running Docker stack with the same generator, behaves like at-least-once producers (exponential backoff with jitter, honouring `Retry-After`), can restart the database container mid-run, and finally reconciles every broker's statement against the reference model. Measured on a laptop (Core i9-11950H; API and SQL Server sharing one Docker VM):
+
+| Scenario | Workload | Result |
+| --- | --- | --- |
+| [Baseline](docs/simulation/baseline.md) | 5,000 activities, 12,521 revisions, 17,756 deliveries, 200 brokers, 16 producers, unthrottled | **2,583 activities/s** (about 2,000-2,800 across runs); p95 request (25 per batch) 223 ms; all 200 statements exact |
+| [Database restart](docs/simulation/database-restart.md) | 6,000 activities, 21,283 deliveries at 400/s; SQL Server restarted at 15 s | Ingestion paused about 3 s (3-14 s across runs), then the backlog cleared. Only **3 of 855 requests returned 503**: EF Core's retries absorbed the rest, at the cost of a p99 of 4.4 s. Readiness went unready, then ready, as a load balancer would see. All 200 statements exact |
+
+The restart run shows the lost-acknowledgement case. Of 6,000 activities, 5,991 were `Created`; the other 9 were reported `Duplicate`. Their inserts committed just as the database stopped, the acknowledgement was lost, and the retries were correctly recognised as repeats. Nothing was double counted.
+
+```
+Acknowledged per second (database restarted at 15 s):
+▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁···▂█▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁
+```
+
+At the brief's peak of thousands of activities per hour (1-3 per second), that is roughly a thousandfold headroom on a single instance.
+
 ## 8. Observability
 
 ### 8.1 Signals
@@ -216,36 +277,6 @@ A caller's `X-Correlation-ID` is adopted if log-safe, otherwise generated. It is
 | **Growing processing delay** (page) | p95 `ihub.activity.ingest_lag` above 15 min for 15 min, or SQS oldest message older than 10 min | One `source_system` late: upstream issue, contact its owners. All late with a growing queue: IHub is behind, so check scaling and RDS load. Check the DLQ for poison messages |
 | Producer conflicts (ticket) | Any `outcome="conflict"` within an hour | A source reused a version with different content; raise it with the owning team |
 
-### 7.3 Property test: convergence against a reference model
-
-Example tests check the interleavings someone thought of. [ConvergencePropertyTests](tests/IHub.Api.Tests/Integration/ConvergencePropertyTests.cs) checks the rule itself:
-
-- A seeded [generator](tools/IHub.Simulator/Workload/WorkloadGenerator.cs) creates activity histories with corrections, reversals, moves between brokers, version gaps (1, 2, 4), time corrections across window boundaries, and the same instant written in UTC or SAST.
-- Each revision is redelivered with 40% probability, everything is shuffled, cut into random batches and sent with 12 concurrent producers.
-- The result is compared with a [reference model](tools/IHub.Simulator/Workload/ReferenceModel.cs) about ten lines long ("keep the highest version, sum the active ones in the window"). Every stored row and every statement must match it, with exactly one `Created` per activity and no `Conflict`.
-
-Five fixed seeds run on every build. `IHUB_PROPERTY_SEEDS=random:50 dotnet test` explores new ones; 50 random seeds passed. A failure prints the seed and the exact diverging rows, and `IHUB_PROPERTY_SEEDS=<seed>` replays it.
-
-**Does the test catch real bugs?** I changed the version guard from `Version < @v` to `Version != @v`, a plausible slip that lets older versions overwrite newer ones. The test failed, listing activities such as `stored v1, expected v4`.
-
-### 7.4 Load and failure simulation
-
-[IHub.Simulator](tools/IHub.Simulator) drives the running Docker stack with the same generator, behaves like at-least-once producers (exponential backoff with jitter, honouring `Retry-After`), can restart the database container mid-run, and finally reconciles every broker's statement against the reference model. Measured on a laptop (Core i9-11950H; API and SQL Server sharing one Docker VM):
-
-| Scenario | Workload | Result |
-| --- | --- | --- |
-| [Baseline](docs/simulation/baseline.md) | 5,000 activities, 12,521 revisions, 17,756 deliveries, 200 brokers, 16 producers, unthrottled | **2,583 activities/s** (about 2,000-2,800 across runs); p95 request (25 per batch) 223 ms; all 200 statements exact |
-| [Database restart](docs/simulation/database-restart.md) | 6,000 activities, 21,283 deliveries at 400/s; SQL Server restarted at 15 s | Ingestion paused about 3 s (3-14 s across runs), then the backlog cleared. Only **3 of 855 requests returned 503**: EF Core's retries absorbed the rest, at the cost of a p99 of 4.4 s. Readiness went unready, then ready, as a load balancer would see. All 200 statements exact |
-
-The restart run shows the lost-acknowledgement case. Of 6,000 activities, 5,991 were `Created`; the other 9 were reported `Duplicate`. Their inserts committed just as the database stopped, the acknowledgement was lost, and the retries were correctly recognised as repeats. Nothing was double counted.
-
-```
-Acknowledged per second (database restarted at 15 s):
-▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁···▂█▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁
-```
-
-At the brief's peak of thousands of activities per hour (1-3 per second), that is roughly a thousandfold headroom on a single instance.
-
 ## 9. AWS run plan
 
 Design only. The full plan, covering upstream delivery, migrations, configuration and secrets, failure modes and capacity, is in **[docs/aws-run-plan.md](docs/aws-run-plan.md)**.
@@ -253,3 +284,72 @@ Design only. The full plan, covering upstream delivery, migrations, configuratio
 - **Architecture.** Product systems publish to SNS; IHub consumes from its own SQS queue (with a DLQ) using an ECS Fargate worker that calls the same ingestion code as the HTTP endpoint. The statement API runs as a second Fargate service behind an ALB, with API Gateway or an identity provider in front for broker traffic. Data lives in RDS SQL Server Multi-AZ.
 - **Deployment.** ECS blue/green through CodeDeploy, with a 10% canary gated on readiness and the error-rate alarm, and automatic rollback. Chosen because rollback is a traffic switch to a version that is still running. Migrations run beforehand as a one-off task, using expand/contract changes.
 - **Capacity.** The brief's peak is about 1-3 activities per second; one instance measured about 2,000 per second (§7.4), so the database is the scaling limit. Start with 2 worker and 2 API tasks across AZs and `db.m6i.large`; scale the worker on queue backlog and the API on CPU.
+
+## 10. Growth: more activity types and sources
+
+| Change | What it takes |
+| --- | --- |
+| New source system | Nothing: identity already includes it. Add it to `Ingestion:KnownSourceSystems` for its own metric series |
+| New activity type | Nothing: `activityType` is a free-form code |
+| Totals by type | Add `ActivityType` to the index INCLUDE list and the `GROUP BY`; additive for clients |
+| Debit types (clawbacks) | An activity-type catalogue with a direction; return `netAmount` beside `grossAmount` |
+| A source without versions | An adapter derives a monotonic version (sequence, commit timestamp) and calls the same ingestor |
+| New transport (SQS, Kafka, files) | A thin consumer calls the existing validator and `ActivityIngestor`; at-least-once delivery is fine |
+| Audit and "statement as at" | An append-only `ActivityRevisions` table written in the same transaction |
+
+Code is organised by feature (`Features/Activities`, `Features/Statements`), so a capability usually touches one folder. SQL Server-specific code is confined to [SqlServerErrors.cs](src/IHub.Api/Persistence/SqlServerErrors.cs).
+
+## 11. Trade-offs
+
+| Chose | Over | Because |
+| --- | --- | --- |
+| Insert, then version-guarded update | `MERGE` | `MERGE` needs `HOLDLOCK` to be concurrency-safe and has a history of edge-case bugs; two plain statements are easier to reason about |
+| Insert first | Update first | Most traffic is new activities; duplicates pay for a caught exception, which is affordable at this volume |
+| Current-state table | Deriving statements from an event log | The "latest version" work happens once, on write; an audit log can sit alongside (section 12) |
+| Totals on read | Stored running totals | Exact by construction; section 6 has the upgrade path |
+| Source version numbers | Last write wins on timestamps | Clocks drift and tie; versions give the same answer every time |
+| Whole-batch validation | Accepting the valid items | Idempotency makes resending the whole batch free; partial acceptance pushes tracking onto producers |
+| Synchronous processing | An in-process queue | More latency and failure modes without improving correctness; in AWS, SQS is the asynchronous step |
+| EF Core | Dapper | The critical write is still one explicit SQL statement; EF adds migrations, pooling and health checks |
+| One project, organised by feature | Clean-architecture projects | Two endpoints do not need the indirection; folders split cleanly later |
+| SQL Server | PostgreSQL | Either works; SQL Server matches the estate. The costs are a heavier local image and RDS licensing |
+
+Build hygiene: central package management, NuGet audit including transitive packages (a vulnerable `System.Security.Cryptography.Pkcs` is pinned to a patched version), warnings as errors, pinned SDK and SQL Server image tags, and CI that builds, runs all tests including Testcontainers, checks migrations match the model, and runs the failure simulation against the Compose stack.
+
+## 12. Known limitations and next steps
+
+1. **Authentication and authorisation.** IAM for SQS, OAuth client credentials for HTTP. A broker reads only their own statement, with the ID taken from the token rather than the URL.
+2. **Append-only `ActivityRevisions` table** written in the same transaction, for audit, "statement as at a date" (useful in commission disputes) and rebuilds.
+3. **The SQS consumer worker**, reusing the existing ingestion code.
+4. **OTLP trace export** to X-Ray or ADOT; trace context is already propagated into logs.
+5. **Itemisation and a per-type breakdown**, served by the existing index with a wider INCLUDE list.
+6. **A set-based batch write** (table-valued parameter) if a source ever needs bulk backfills well beyond the measured ~2,000/s.
+7. **Run the simulator against a production-sized RDS instance** before go-live to confirm the capacity figures.
+
+## 13. Use of AI tools
+
+The ingestion algorithm is my own: insert, then a version-guarded update, then classifying the outcome. I designed it and tested it outside this solution before building the service around it.
+
+The design diagrams in [`docs/designs/`](docs/designs/) were drawn by me, without AI tools, before implementation began: [ingestion algorithm](docs/designs/ingestion-algorithm.png) ([SVG](docs/designs/ingestion-algorithm.svg)).
+
+I used Claude Code (Anthropic) as a pair programmer: I proposed and decided, it drafted, offered alternatives and challenged my choices. Example prompts:
+
+- **Implementation.** Claude Code drafted code, tests, the property test, the load and failure simulator and the documentation from the agreed design. I reviewed each step and steered how the work was structured.
+  - *"SOLUTION.md must evolve with every commit we make."*
+  - *"Follow [these commit guidelines](https://chris.beams.io/git-commit)."*
+- **Review.** Checking the work against the brief and deciding which scenarios the tests must prove.
+  - *"Run tests following these scenarios:"*
+    - The same revision resubmitted, including within one batch, is counted once
+    - A newer version replaces the stored state; an older one arriving late is ignored
+    - A reversal that arrives before the original is not undone by it
+    - The same version with different content is flagged as a conflict and not applied
+    - Concurrent submissions for one intermediary are all counted exactly once
+    - Concurrent versions of one activity converge on the highest version
+    - An activity moved to another intermediary leaves the first statement
+    - An invalid batch is rejected as a whole and applies nothing
+    - Statement windows are half-open and respect time zone offsets
+    - Currencies are totalled separately and never converted
+    - Any delivery order, with duplicates and concurrency, matches an independent reference model (property test)
+    - Load at about 2,500 activities/s, and a database restart mid-load, leave every statement exact (simulator)
+
+I made, and own, every design decision. The correctness claims rest on the tests and measurements in section 7, run on my machine, not on anything the tool asserted.

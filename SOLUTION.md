@@ -122,6 +122,10 @@ Schema changes are EF Core migrations. Locally they are applied at startup befor
 
 Steps 1 and 2 decide what is stored; step 3 only explains the outcome to the producer.
 
+![Ingestion algorithm](docs/designs/ingestion-algorithm.png)
+
+*Hand-drawn sketch of the ingestion algorithm, designed and tested before this service was built ([SVG](docs/designs/ingestion-algorithm.svg)).*
+
 ### 5.2 Why it holds under concurrency
 
 | Race | What SQL Server does | Result |

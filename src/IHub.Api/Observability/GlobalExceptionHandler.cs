@@ -1,8 +1,6 @@
-using System.Data.Common;
+using IHub.Api.Persistence;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 
 namespace IHub.Api.Observability;
 
@@ -50,7 +48,7 @@ internal sealed partial class GlobalExceptionHandler(
     private static (int StatusCode, string Title, string ErrorType) Classify(Exception exception) => exception switch
     {
         BadHttpRequestException bad => (bad.StatusCode, "The request could not be read.", "bad_request"),
-        RetryLimitExceededException or TimeoutException or DbException or DbUpdateException { InnerException: DbException } =>
+        _ when SqlServerErrors.IsDatabaseUnavailable(exception) =>
             (StatusCodes.Status503ServiceUnavailable, "The service cannot reach its database. Retry shortly.", "database_unavailable"),
         _ => (StatusCodes.Status500InternalServerError, "An unexpected error occurred.", "unhandled"),
     };

@@ -27,7 +27,7 @@
 | Growth to more activity types and sources | [10](#10-growth-more-activity-types-and-sources) |
 | Signals exposed and why; two alerts with thresholds and actions | [8](#8-observability) |
 | AWS architecture, delivery, rollout, migrations, configuration, failures, capacity | [9](#9-aws-run-plan) and [docs/aws-run-plan.md](docs/aws-run-plan.md) |
-| Trade-offs, assumptions, AI use | [11](#11-trade-offs), [2](#2-assumptions), [13](#13-use-of-ai-tools) |
+| Trade-offs, assumptions and open questions, AI use | [11](#11-trade-offs), [2](#2-assumptions), [2.1](#21-open-questions-for-the-business), [13](#13-use-of-ai-tools) |
 
 ---
 
@@ -58,6 +58,21 @@
 | A7 | Identifiers are opaque and case-sensitive. | Binary collation on key columns: `POL-1` and `pol-1` are different activities. |
 | A8 | Peak load is thousands of activities per hour, with bursts. | Synchronous processing in the request is enough; no queue inside the service. |
 | A9 | Authentication is handled in front of the service (gateway or identity provider). | No auth code in the slice. |
+
+### 2.1 Open questions for the business
+
+Each assumption above is a decision I would confirm before go-live. The ones most likely to change the design:
+
+| # | Question | Tests | If the answer differs |
+| --- | --- | --- | --- |
+| Q1 | Can every product system number its revisions of an activity? | A2 | Sources without versions need an adapter that derives one (section 10); the core write path does not change |
+| Q2 | Should clawbacks and adjustments reduce the statement total, or be shown separately? | A4 | An activity-type catalogue with a direction, and `netAmount` beside `grossAmount` |
+| Q3 | Once commission for a period is paid, may late corrections still change that period's statement? | A6 | If not, close periods and serve "statement as at" from an append-only revision history (section 12) |
+| Q4 | Which time zone defines a broker's day and month: SAST or UTC? | A6 | The API already accepts any offset; a SAST month default could be added for portal convenience |
+| Q5 | Can a brokerage firm see the statements of the intermediaries under it? | A9 | Authorisation needs an intermediary hierarchy, not just "own ID from the token" |
+| Q6 | How soon after an activity occurs must it appear on a statement? | A8 | Sets the processing-delay alert threshold (15 minutes today, section 8.3) and whether an asynchronous queue is acceptable |
+| Q7 | Do brokers need individual line items, for example to dispute commission? | - | An itemised endpoint served by the existing index (section 12) |
+| Q8 | How long must revision history be kept for audit or regulatory purposes? | - | Sets retention and archiving of the revision history and of closed partitions |
 
 ## 3. API
 
